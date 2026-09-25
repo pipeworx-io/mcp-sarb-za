@@ -1,20 +1,32 @@
 {
   "name": "@pipeworx/mcp-sarb-za",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "South African Reserve Bank (SARB) Web API MCP. Keyless.",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "mcp-sarb-za": "bin/cli.js"
+  },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "sarb-za"],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pipeworx-io/mcp-sarb-za"
+    "url": "git+https://github.com/pipeworx-io/mcp-sarb-za.git"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^4.20260405.1"
+  },
+  "pipeworx": {
+    "sourceHash": "v1-c132354be8f36d80c162f0d60c09f2f85d0f3537bd1158d4d27dc26a8d702686",
+    "sourceCommit": "00c836ddeaecbdd581dcfb0fb1842efea104006e"
   }
 }
