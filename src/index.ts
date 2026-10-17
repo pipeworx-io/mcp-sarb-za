@@ -683,7 +683,14 @@ function collapse(s: string): string {
  * `sarb_timeseries` to pull the historical observation series for that indicator.
  *
  * Quirk: an unknown TimeseriesCode returns HTTP 200 with an empty array `[]`
- * (not an error). The SARB API can be slow (several seconds per call).
+ * (not an error) — sarb_timeseries now turns that into a named `no_data`
+ * error with guidance rather than a bare `[]` the caller has to notice is
+ * suspicious (fleet #3206). The SARB API can be slow (several seconds per call).
+ *
+ * sarb_policy_rate reads TimeseriesCode MMRD002A ("SARB Policy Rate") with an
+ * explicit multi-year date range (the default/no-range call only returns the
+ * last ~25 points, too narrow to see the previous decision) and computes the
+ * current/previous-rate shape from it.
  */
 
 
@@ -699,6 +706,15 @@ const BASE = 'https://custom.resbank.co.za/SarbWebApi';
 const UA = 'pipeworx-mcp-sarb-za/1.0 (+https://pipeworx.io)';
 
 const tools: McpToolExport['tools'] = [
+  {
+    name: 'sarb_policy_rate',
+    description:
+      "The SARB (South African Reserve Bank) Policy Rate — South Africa's benchmark monetary-policy interest " +
+      'rate, set by the Monetary Policy Committee. Returns the current rate, the date it took effect, the ' +
+      'previous rate and when that one took effect, plus recent decision history (TimeseriesCode MMRD002A), ' +
+      "computed from several years of daily observations rather than sarb_timeseries's narrow default window.",
+    inputSchema: { type: 'object', properties: {} },
+  },
   {
     name: 'sarb_home_rates',
     description:
@@ -744,7 +760,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'sarb_timeseries',
     description:
-      'Historical observation series for a single SARB indicator, identified by its TimeseriesCode (obtain codes from home_rates, current_market_rates, cpd_rates or exchange_rates). Examples: "MMRD002A" (SARB Policy Rate), "MMRD000A" (prime lending rate), "EXCX135D" (Rand per US Dollar), "CPI1000F" (CPI). Optionally bound the range with start_date and end_date (YYYY-MM-DD); omit both for the full available history. An unknown code returns an empty list.',
+      'Historical observation series for a single SARB indicator, identified by its TimeseriesCode (obtain codes from home_rates, current_market_rates, cpd_rates or exchange_rates). Examples: "MMRD002A" (SARB Policy Rate — or use sarb_policy_rate directly), "MMRD000A" (prime lending rate), "EXCX135D" (Rand per US Dollar), "CPI1000F" (CPI). Optionally bound the range with start_date and end_date (YYYY-MM-DD); omit both for the most recent ~25 points, not the full history. An unknown code and a valid code with no data in range both come back as a named `no_data` error (the SARB itself cannot tell them apart).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -760,8 +776,60 @@ const tools: McpToolExport['tools'] = [
   },
 ];
 
+interface SarbObs { Period: string; Value: number | null }
+
+/** {rate, effective_since, previous_rate, previous_rate_effective_since, decision_history, data_as_of} from an ascending {Period,Value} series. */
+function computeRateChanges(obs: SarbObs[]) {
+  const pts = obs
+    .filter((o) => o.Value !== null)
+    .map((o) => ({ date: o.Period.slice(0, 10), value: o.Value as number }));
+  if (pts.length === 0) return null;
+  const changes: { rate: number; effective_since: string }[] = [{ rate: pts[0].value, effective_since: pts[0].date }];
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].value !== changes[changes.length - 1].rate) {
+      changes.push({ rate: pts[i].value, effective_since: pts[i].date });
+    }
+  }
+  const current = changes[changes.length - 1];
+  const previous = changes.length > 1 ? changes[changes.length - 2] : null;
+  return {
+    rate: current.rate,
+    unit: 'percent',
+    effective_since: current.effective_since,
+    previous_rate: previous?.rate ?? null,
+    previous_rate_effective_since: previous?.effective_since ?? null,
+    decision_history: changes.slice(-5).reverse(),
+    data_as_of: pts[pts.length - 1].date,
+  };
+}
+
+async function policyRate() {
+  const end = new Date().toISOString().slice(0, 10);
+  // 4 years back — comfortably more than enough to see the last several MPC
+  // decisions (they meet ~6x/year and often hold for multiple meetings).
+  const start = `${Number(end.slice(0, 4)) - 4}${end.slice(4)}`;
+  const path = `/WebIndicators/Shared/GetTimeseriesObservations/MMRD002A/${encodeURIComponent(start)}/${encodeURIComponent(end)}`;
+  const raw = (await sarbGet(path)) as SarbObs[];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return {
+      error: 'no_data',
+      message: 'The SARB returned no observations for the Policy Rate series (MMRD002A). Try sarb_home_rates for the current snapshot.',
+    };
+  }
+  const sorted = [...raw].sort((a, b) => (a.Period < b.Period ? -1 : 1));
+  const computed = computeRateChanges(sorted);
+  return (
+    computed ?? {
+      error: 'no_data',
+      message: 'The SARB returned only null values for the Policy Rate series (MMRD002A) in the last 4 years.',
+    }
+  );
+}
+
 async function callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
+    case 'sarb_policy_rate':
+      return policyRate();
     case 'sarb_home_rates':
       return sarbGet('/WebIndicators/HomePageRates');
     case 'sarb_current_market_rates':
@@ -784,7 +852,23 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       if (start && end) {
         path += `/${encodeURIComponent(start)}/${encodeURIComponent(end)}`;
       }
-      return sarbGet(path);
+      const result = await sarbGet(path);
+      // The SARB answers an unknown code, or a known code with no data in the
+      // requested range, the SAME way: HTTP 200 with an empty array — there is
+      // no distinguishing status code. A bare `[]` reads as "ran fine, nothing
+      // there"; say plainly that it could also mean the code does not exist
+      // (fleet #3206), rather than leaving that ambiguity silent.
+      if (Array.isArray(result) && result.length === 0) {
+        return {
+          error: 'no_data',
+          message:
+            `The SARB returned no observations for code "${code}"${start && end ? ` between ${start} and ${end}` : ''}. ` +
+            'This means EITHER the code does not exist OR it has no data in that range — the SARB API answers both ' +
+            'the same way. Call sarb_home_rates / sarb_current_market_rates / sarb_cpd_rates / sarb_exchange_rates ' +
+            'to confirm a valid TimeseriesCode, or widen the date range.',
+        };
+      }
+      return result;
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
