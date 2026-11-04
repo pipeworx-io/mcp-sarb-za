@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-sarb-za",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "South African Reserve Bank (SARB) Web API MCP. Keyless.",
   "type": "module",
   "main": "lib/index.js",
@@ -27,7 +27,7 @@
     "mode": "gateway",
     "slug": "sarb-za",
     "gatewaySlug": "sarb-za",
-    "sourceHash": "v1-cebb718cf9693fcae69a558ad6a11028c235b307ce8c1056f7614061ed85f436",
-    "sourceCommit": "6bae4cfa7b6a73bbe014dc8820a19c80c842b21e"
+    "sourceHash": "v1-f2767e46d017be9ae49258e071bdfebdc871edb006af992bb1648495aa315523",
+    "sourceCommit": "db27387ed3ef7ec4805d465f7964a7f65f937006"
   }
 }
